@@ -7,7 +7,7 @@ from app.agents.writer import Writer
 from app.config import distribute_posting_times, parse_posting_times
 from app.db import Store
 from app.llm import LLMClient, LLMError, extract_json
-from app.runtime import Runtime
+from app.runtime import MAX_MULTIPOST_MODELS, Runtime
 
 
 def test_distribute_posting_times():
@@ -209,6 +209,26 @@ def test_author_settings_are_runtime_editable(tmp_path):
     assert rt.get_str("writer_model") == "author-model"
     with pytest.raises(KeyError):
         rt.get("strategist_model")
+
+
+def test_multipost_models_are_parsed_deduplicated_and_capped(tmp_path):
+    store = Store(tmp_path / "multi.db")
+    store.init()
+    rt = Runtime(store)
+
+    assert rt.multipost_models == []
+
+    rt.set("multipost_models", "a/b, c-d\n e; a/b")
+    assert rt.multipost_models == ["a/b", "c-d", "e"]
+
+    rt.set(
+        "multipost_models",
+        ",".join(f"provider/model-{index}" for index in range(MAX_MULTIPOST_MODELS + 4)),
+    )
+    assert len(rt.multipost_models) == MAX_MULTIPOST_MODELS
+
+    rt.reset("multipost_models")
+    assert rt.multipost_models == []
 
 
 def test_init_removes_legacy_topics_and_preserves_posts(tmp_path):

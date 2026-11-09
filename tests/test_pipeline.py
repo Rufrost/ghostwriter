@@ -226,3 +226,66 @@ async def test_custom_author_instructions_reach_generation_and_rephrase(tmp_path
     await service.rephrase_to_queue(queued_id)
 
     assert all("Добавляй один практический пример" in call["user"] for call in llm.calls)
+
+
+async def test_multipost_sends_same_russian_prompt_to_every_model(tmp_path):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    rt.set("brand_language", "en")  # multipost обязан писать по-русски
+
+    variants = await service.multipost("Автоматизация", ["model-a", "model-b"])
+
+    assert [variant.model for variant in variants] == ["model-a", "model-b"]
+    assert len(llm.calls) == 2
+    assert [call["model"] for call in llm.calls] == ["model-a", "model-b"]
+    # один и тот же промпт для всех моделей
+    assert llm.calls[0]["user"] == llm.calls[1]["user"]
+    assert "ЯЗЫК ПОСТА: ru" in llm.calls[0]["user"]
+    assert "ПИШИ ПОСТ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ." in llm.calls[0]["user"]
+
+    for variant in variants:
+        assert variant.post_id is not None
+        post = store.get_post(int(variant.post_id))
+        assert post["status"] == "pending_approval"
+        assert post["source"] == "multipost"
+
+
+async def test_multipost_isolates_model_failure(tmp_path):
+    store, _rt, _llm, service, _notifier = build(tmp_path)
+
+    class PartialLLM:
+        async def complete(self, *, model: str, **kwargs) -> str:
+            if model == "bad-model":
+                raise RuntimeError("модель недоступна")
+            return json.dumps(
+                {"text": "Рабочий вариант на русском.", "topic_tag": ""},
+                ensure_ascii=False,
+            )
+
+    service.writer.llm = PartialLLM()
+
+    variants = await service.multipost("Тема", ["bad-model", "good-model"])
+
+    assert variants[0].post_id is None
+    assert "модель недоступна" in variants[0].error
+    assert variants[1].post_id is not None
+    assert store.get_post(int(variants[1].post_id))["status"] == "pending_approval"
+    assert len(store.recent_posts()) == 1
+
+
+async def test_multipost_variant_can_be_queued_or_discarded(tmp_path):
+    store, _rt, _llm, service, _notifier = build(tmp_path)
+    first, second = await service.multipost("Тема", ["model-a", "model-b"])
+    first_id = int(first.post_id)
+    second_id = int(second.post_id)
+
+    assert service.queue_multipost_variant(first_id)
+    assert store.get_post(first_id)["status"] == "queued"
+    assert store.count_queued_posts() == 1
+
+    assert service.discard_multipost_variant(second_id)
+    assert store.get_post(second_id) is None
+
+    # вариант, уже отправленный в очередь, тоже можно удалить
+    assert service.discard_multipost_variant(first_id)
+    assert store.get_post(first_id) is None
+    assert store.count_queued_posts() == 0

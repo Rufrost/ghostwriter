@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -11,6 +12,17 @@ from .config import settings
 from .db import Store
 
 _TRUE = {"1", "true", "yes", "on", "да", "вкл"}
+MAX_MULTIPOST_MODELS = 8
+
+
+def parse_model_list(raw: str) -> list[str]:
+    """'a/b, c-d\\n e' → ['a/b', 'c-d', 'e'] без дублей, порядок сохраняется."""
+    models: list[str] = []
+    for chunk in re.split(r"[,\n;\s]+", raw or ""):
+        model = chunk.strip()
+        if model and model not in models:
+            models.append(model)
+    return models
 
 
 def _as_bool(v: Any) -> bool:
@@ -66,6 +78,7 @@ SPECS: dict[str, Spec] = {
     "max_post_chars": Spec("max_post_chars", _as_int, 500),
     # модели
     "writer_model": Spec("writer_model", _as_str, "deepseek-chat"),
+    "multipost_models": Spec("multipost_models", _as_str, ""),
     "llm_temperature": Spec("llm_temperature", _as_float, 0.8),
     "writer_instructions": Spec(None, _as_str, ""),
 }
@@ -141,6 +154,11 @@ class Runtime:
     @property
     def posting_jitter_minutes(self) -> int:
         return max(0, min(60, self.get_int("posting_jitter_minutes")))
+
+    @property
+    def multipost_models(self) -> list[str]:
+        """Список моделей для /multipost, заданный командой /models."""
+        return parse_model_list(self.get_str("multipost_models"))[:MAX_MULTIPOST_MODELS]
 
     @property
     def token(self) -> str:

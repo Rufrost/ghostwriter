@@ -31,6 +31,16 @@ class PublishCheck:
     reason: str = ""
 
 
+@dataclass
+class MultipostVariant:
+    """Один вариант мультипоста: пост в БД или ошибка модели."""
+
+    model: str
+    post_id: int | None = None
+    result: WriterResult | None = None
+    error: str = ""
+
+
 class ContentService:
     def __init__(
         self,
@@ -155,6 +165,65 @@ class ContentService:
             )
             return post_id
 
+    async def multipost(
+        self,
+        topic: str,
+        models: list[str],
+        *,
+        instruction: str = "",
+        language: str = "ru",
+    ) -> list[MultipostVariant]:
+        """Один промпт для всех моделей. Варианты ждут выбора, как посты на согласовании."""
+        topic = topic.strip() or "Свободная тема"
+        results = await self.writer.generate_multi(
+            topic, models, instruction=instruction, language=language
+        )
+        variants: list[MultipostVariant] = []
+        for item in results:
+            if item.result is None:
+                variants.append(MultipostVariant(model=item.model, error=item.error))
+                continue
+            post_id = self.store.create_post(
+                item.result.text,
+                topic=topic,
+                status="pending_approval",
+                source="multipost",
+            )
+            variants.append(
+                MultipostVariant(
+                    model=item.model, post_id=post_id, result=item.result
+                )
+            )
+        done = sum(1 for variant in variants if variant.post_id is not None)
+        self.store.log_event(
+            f"Мультипост «{topic[:80]}»: {done}/{len(variants)} моделей",
+            "info" if done else "warn",
+        )
+        return variants
+
+    def queue_multipost_variant(self, post_id: int) -> bool:
+        """Отправляет выбранный вариант мультипоста в общую очередь расписания."""
+        post = self.store.get_post(post_id)
+        if post is None or post["source"] != "multipost":
+            return False
+        if post["status"] not in {"draft", "pending_approval"}:
+            return False
+        self.store.update_post(post_id, status="queued", error=None)
+        return True
+
+    def discard_multipost_variant(self, post_id: int) -> bool:
+        """Удаляет неопубликованный вариант мультипоста."""
+        post = self.store.get_post(post_id)
+        if post is None or post["source"] != "multipost":
+            return False
+        if post["status"] == "queued":
+            return self.store.delete_queued_post(post_id)
+        if post["status"] in {"draft", "pending_approval"}:
+            return self.store.delete_post(
+                post_id, statuses=("draft", "pending_approval")
+            )
+        return False
+
     async def regenerate(self, post_id: int, instruction: str = "") -> int:
         """Создаёт новый самостоятельный вариант текущего поста."""
         old = self.store.get_post(post_id)
@@ -258,7 +327,9 @@ class ContentService:
 
     async def publish_queued_now(self, post_id: int) -> bool:
         post = self.store.get_post(post_id)
-        if post is None or post["status"] not in {"queued", "failed", "pending_approval"}:
+        if post is None or post["status"] not in {
+            "queued", "failed", "pending_approval", "draft"
+        }:
             return False
         self._assign_image(post_id)
         self.store.update_post(post_id, status="approved", error=None)

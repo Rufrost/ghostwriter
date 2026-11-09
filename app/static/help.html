@@ -398,10 +398,18 @@
         </section>
 
         <section class="group" id="content">
-          <div class="group-heading"><h2>Контент</h2><span class="group-count">3 команды</span></div>
+          <div class="group-heading"><h2>Контент</h2><span class="group-count">5 команд</span></div>
           <article class="command" data-search="post next создать сгенерировать пост автор тема">
             <div class="command-name"><code>/post [тема]</code><button class="copy" data-copy="/post ">Копировать</button></div>
             <div><h3>Сгенерировать пост Автором</h3><p>Передайте тему после команды. Это разовая генерация: планировщик сам Автора не вызывает.</p><span class="example">/post Почему ИИ не заменяет эксперта</span><p class="alias">Псевдоним: /next</p></div>
+          </article>
+          <article class="command" data-search="multipost mp мультипост несколько моделей один промпт сравнить варианты русский">
+            <div class="command-name"><code>/multipost [промпт]</code><button class="copy" data-copy="/multipost ">Копировать</button></div>
+            <div><h3>Один промпт через разные модели</h3><p>Каждая модель из списка <span class="inline-code">/models</span> получает одинаковый промпт и пишет свой вариант на русском языке. Под каждым вариантом: «В очередь», «Опубликовать», «Удалить».</p><span class="example">/multipost Почему автоматизация не заменяет эксперта</span><p class="alias">Псевдоним: /mp</p></div>
+          </article>
+          <article class="command" data-search="models модели список мультипост добавить удалить set clear">
+            <div class="command-name"><code>/models [действие]</code><button class="copy" data-copy="/models">Копировать</button></div>
+            <div><h3>Настроить модели для мультипоста</h3><p>Без аргументов показывает список. Действия: <span class="inline-code">add ID</span>, <span class="inline-code">remove #N</span>, <span class="inline-code">set ID1, ID2</span>, <span class="inline-code">clear</span>. Все модели должны быть доступны на текущем <span class="inline-code">LLM_BASE_URL</span>.</p><span class="example">/models add anthropic/claude-sonnet-5.5, openai/gpt-4o-mini</span></div>
           </article>
           <article class="command" data-search="queue posts очередь готовые посты добавить изменить удалить перефразировать">
             <div class="command-name"><code>/queue</code><button class="copy" data-copy="/queue">Копировать</button></div>

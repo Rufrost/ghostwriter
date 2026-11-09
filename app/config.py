@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
     writer_model: str = "deepseek-chat"
+    # Модели для /multipost через запятую. Меняются из бота командой /models.
+    multipost_models: str = ""
     llm_temperature: float = 0.8
     llm_timeout: float = 120.0
 

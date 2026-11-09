@@ -1,6 +1,7 @@
 """Автор — первый ИИ. Пишет текст поста под конкретную тему."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -49,6 +50,19 @@ class WriterResult:
         return text_length(self.text)
 
 
+@dataclass
+class MultiWriterResult:
+    """Результат одной модели в мультипосте: текст либо ошибка."""
+
+    model: str
+    result: WriterResult | None = None
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None
+
+
 class Writer:
     def __init__(self, store: Store, rt: Runtime, llm: LLMClient | None = None) -> None:
         self.store = store
@@ -56,13 +70,13 @@ class Writer:
         self.llm = llm or LLMClient()
 
     # ---------- бюджет длины ----------
-    def _char_budget(self) -> int:
+    def _char_budget(self, language: str | None = None) -> int:
         """Сколько символов просить у модели, чтобы уложиться в байтовый лимит.
 
         Кириллица — 2 байта на символ, эмодзи — до 4. Берём запас.
         """
         max_bytes = self.rt.max_chars
-        lang = self.rt.get_str("brand_language").lower()
+        lang = (language or self.rt.get_str("brand_language")).lower()
         if lang.startswith(("ru", "uk", "be", "bg", "sr")):
             budget = max_bytes // 2 - 10
         else:
@@ -83,15 +97,23 @@ class Writer:
         angle: str = "",
         format_hint: str = "",
         instruction: str = "",
+        language: str | None = None,
     ) -> str:
-        budget = self._char_budget()
+        lang = (language or self.rt.get_str("brand_language")).lower()
+        budget = self._char_budget(lang)
         cta = self.rt.get_str("brand_cta")
         forbidden = self.rt.get_str("forbidden_topics")
         custom = self.rt.get_str("writer_instructions").strip()
+        language_rule = (
+            "ПИШИ ПОСТ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ."
+            if lang.startswith("ru")
+            else ""
+        )
         return f"""НИША: {self.rt.get_str('brand_niche')}
 ТОНАЛЬНОСТЬ: {self.rt.get_str('brand_voice')}
 АУДИТОРИЯ: {self.rt.get_str('brand_audience')}
-ЯЗЫК ПОСТА: {self.rt.get_str('brand_language')}
+ЯЗЫК ПОСТА: {lang}
+{language_rule}
 
 ЗНАНИЯ О ПРОЕКТЕ (используй как источник фактов и контекста):
 {self.store.project_knowledge_context() or '—'}
@@ -119,12 +141,19 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
         angle: str = "",
         format_hint: str = "",
         instruction: str = "",
+        model: str | None = None,
+        language: str | None = None,
     ) -> WriterResult:
-        budget = self._char_budget()
+        model_id = (model or self.rt.get_str("writer_model")).strip()
+        if not model_id:
+            raise LLMError("Не задана модель ИИ")
+        budget = self._char_budget(language)
         raw = await self.llm.complete(
             system=SYSTEM,
-            user=self._user_prompt(topic, angle, format_hint, instruction),
-            model=self.rt.get_str("writer_model"),
+            user=self._user_prompt(
+                topic, angle, format_hint, instruction, language=language
+            ),
+            model=model_id,
             temperature=self.rt.get("llm_temperature"),
             max_tokens=MAX_TOKENS,
             json_mode=True,
@@ -141,8 +170,10 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
             )
             raw2 = await self.llm.complete(
                 system=SYSTEM,
-                user=self._user_prompt(topic, angle, format_hint, tighten),
-                model=self.rt.get_str("writer_model"),
+                user=self._user_prompt(
+                    topic, angle, format_hint, tighten, language=language
+                ),
+                model=model_id,
                 temperature=max(0.4, float(self.rt.get("llm_temperature")) - 0.3),
                 max_tokens=MAX_TOKENS,
                 json_mode=True,
@@ -157,6 +188,35 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
             text=text.strip(), topic_tag=self._clean_tag(tag), topic=topic,
             attempts=attempts, raw=raw,
         )
+
+    async def generate_multi(
+        self,
+        topic: str,
+        models: list[str],
+        *,
+        instruction: str = "",
+        language: str = "ru",
+        concurrency: int = 3,
+    ) -> list[MultiWriterResult]:
+        """Один и тот же промпт — каждой модели. Сбой одной не ломает остальные."""
+        unique = list(dict.fromkeys(model.strip() for model in models if model.strip()))
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def run_one(model: str) -> MultiWriterResult:
+            async with semaphore:
+                try:
+                    result = await self.generate(
+                        topic,
+                        instruction=instruction,
+                        model=model,
+                        language=language,
+                    )
+                except Exception as exc:
+                    log.warning("Мультипост: модель %s не справилась: %s", model, exc)
+                    return MultiWriterResult(model=model, error=str(exc)[:500])
+                return MultiWriterResult(model=model, result=result)
+
+        return list(await asyncio.gather(*(run_one(model) for model in unique)))
 
     async def revise(self, text: str, instruction: str) -> WriterResult:
         """Переписать существующий пост по замечанию из Telegram."""

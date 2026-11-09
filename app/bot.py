@@ -29,7 +29,7 @@ from aiogram.types import (
 
 from .config import distribute_posting_times, settings
 from .db import metrics_dict
-from .runtime import SPECS, Runtime
+from .runtime import MAX_MULTIPOST_MODELS, SPECS, Runtime, parse_model_list
 from .service import ContentService
 from .stock import (
     MAX_IMAGE_BYTES,
@@ -46,6 +46,8 @@ HELP = """<b>Ghostwriter — автопостинг в Threads</b>
 
 <b>Контент</b>
 /post [тема] — сгенерировать пост Автором прямо сейчас
+/multipost [промпт] — один промпт через все модели из /models (на русском)
+/models — список моделей для мультипоста
 /queue — очередь готовых постов для общего расписания
 /pending — посты, ожидающие подтверждения
 /author — настройки ИИ-автора
@@ -79,6 +81,8 @@ BOT_COMMANDS = [
     BotCommand(command="menu", description="Все команды бота"),
     BotCommand(command="help", description="Полная справка по командам"),
     BotCommand(command="post", description="Сгенерировать пост Автором"),
+    BotCommand(command="multipost", description="Один промпт через разные модели"),
+    BotCommand(command="models", description="Модели для мультипоста"),
     BotCommand(command="queue", description="Очередь готовых постов"),
     BotCommand(command="pending", description="Посты на согласовании"),
     BotCommand(command="author", description="Настройки ИИ-автора"),
@@ -232,6 +236,35 @@ def approval_keyboard(post_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ Доработать", callback_data=f"edit:{post_id}"),
                 InlineKeyboardButton(text="🚫 Пропустить", callback_data=f"skip:{post_id}"),
             ],
+        ]
+    )
+
+
+def multipost_variant_keyboard(post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📥 В очередь", callback_data=f"mp:queue:{post_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🚀 Опубликовать", callback_data=f"mp:publish:{post_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить", callback_data=f"mp:discard:{post_id}"
+                )
+            ],
+        ]
+    )
+
+
+def multipost_done_keyboard(label: str) -> InlineKeyboardMarkup:
+    """Кнопка-статус для уже обработанного варианта."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data="mp:noop")]
         ]
     )
 
@@ -891,6 +924,225 @@ def build_dispatcher(
             log.exception("Ошибка генерации")
             await note.edit_text(f"❌ Не получилось: {esc(exc)}")
 
+    # ---------- /multipost и /models ----------
+    def multipost_models_text() -> str:
+        models = rt.multipost_models
+        if models:
+            listing = "\n".join(
+                f"{index}. <code>{esc(model)}</code>"
+                for index, model in enumerate(models, start=1)
+            )
+        else:
+            listing = "<i>Пока не выбрано ни одной модели.</i>"
+        return (
+            "<b>🧠 Модели для /multipost</b>\n"
+            f"{listing}\n\n"
+            "Один и тот же промпт уходит во все модели, а варианты приходят "
+            "отдельными сообщениями. Текст всегда генерируется на русском языке.\n\n"
+            "<b>Настроить:</b>\n"
+            "<code>/models add provider/model</code> — добавить\n"
+            "<code>/models add model-a, model-b</code> — добавить несколько\n"
+            "<code>/models remove #2</code> или <code>/models remove ID</code>\n"
+            "<code>/models set model-a, model-b</code> — заменить список\n"
+            "<code>/models clear</code> — очистить\n\n"
+            f"Максимум моделей: {MAX_MULTIPOST_MODELS}. Все ID должны быть "
+            "доступны на текущем <code>LLM_BASE_URL</code>."
+        )
+
+    def multipost_panel_text() -> str:
+        models = rt.multipost_models
+        if not models:
+            return (
+                "<b>🧠 Мультипост</b>\n\n"
+                "Список моделей пока пуст. Добавьте модели:\n"
+                "<code>/models add provider/model</code>\n\n"
+                "Затем отправьте промпт: <code>/multipost ваша тема</code>."
+            )
+        listing = ", ".join(f"<code>{esc(model)}</code>" for model in models)
+        return (
+            "<b>🧠 Мультипост</b>\n"
+            f"Модели ({len(models)}): {listing}\n\n"
+            "Отправьте промпт:\n"
+            "<code>/multipost Расскажи, как автоматизировать рутину</code>\n\n"
+            "Каждая модель получит одинаковый промпт и напишет свой вариант на "
+            "русском языке. Удачный вариант можно отправить в очередь или "
+            "опубликовать сразу.\n\n"
+            "Изменить список моделей: /models"
+        )
+
+    @router.message(Command("multipost", "mp"))
+    async def cmd_multipost(message: Message, command: CommandObject) -> None:
+        prompt = (command.args or "").strip()
+        if not prompt:
+            await message.answer(multipost_panel_text())
+            return
+        models = rt.multipost_models
+        if not models:
+            await message.answer(
+                "❌ Список моделей пуст. Добавьте модели командой "
+                "<code>/models add provider/model</code>, затем повторите /multipost."
+            )
+            return
+
+        note = await message.answer(
+            f"⏳ Генерирую варианты: {len(models)} — по одному от каждой модели…"
+        )
+        try:
+            variants = await service.multipost(prompt[:500], models)
+        except Exception as exc:
+            log.exception("Ошибка мультипоста")
+            await note.edit_text(f"❌ Не получилось: {esc(exc)}")
+            return
+
+        ok = sum(1 for variant in variants if variant.post_id is not None)
+        summary = (
+            f"🧠 <b>Мультипост</b> · «{esc(prompt[:120])}»\n"
+            f"Моделей: {len(variants)} · вариантов: <b>{ok}</b>"
+        )
+        if ok < len(variants):
+            summary += f" · ошибок: {len(variants) - ok}"
+        await note.edit_text(summary)
+
+        for index, variant in enumerate(variants, start=1):
+            if variant.post_id is None or variant.result is None:
+                await message.answer(
+                    f"❌ <code>{esc(variant.model)}</code>: "
+                    f"{esc(variant.error or 'модель не ответила')}"
+                )
+                continue
+            text = variant.result.text
+            await message.answer(
+                f"🧠 <b>Вариант {index}/{len(variants)}</b> · "
+                f"<code>{esc(variant.model)}</code>\n"
+                f"Длина: {text_length(text)}/{rt.max_chars} байт\n\n"
+                f"<blockquote>{esc(text)}</blockquote>",
+                reply_markup=multipost_variant_keyboard(variant.post_id),
+                disable_web_page_preview=True,
+            )
+
+    @router.message(Command("models", "multimodels"))
+    async def cmd_models(message: Message, command: CommandObject) -> None:
+        raw = (command.args or "").strip()
+        if not raw:
+            await message.answer(multipost_models_text())
+            return
+
+        parts = raw.split(maxsplit=1)
+        action = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        current = rt.multipost_models
+
+        if action in {"add", "добавить", "+"}:
+            additions = parse_model_list(rest)
+            if not additions:
+                await message.answer(
+                    "Использование: <code>/models add provider/model</code>"
+                )
+                return
+            merged = list(dict.fromkeys(current + additions))
+            if len(merged) > MAX_MULTIPOST_MODELS:
+                await message.answer(
+                    f"❌ Максимум {MAX_MULTIPOST_MODELS} моделей, "
+                    f"а получилось {len(merged)}."
+                )
+                return
+            rt.set("multipost_models", ",".join(merged))
+            added = [model for model in additions if model not in current]
+            if added:
+                text = "✅ Добавлено: " + ", ".join(
+                    f"<code>{esc(model)}</code>" for model in added
+                )
+            else:
+                text = "ℹ️ Эти модели уже есть в списке."
+            await message.answer(text)
+        elif action in {"remove", "del", "delete", "удалить", "-"}:
+            target = rest.lstrip("#").strip()
+            removed: str | None = None
+            if target.isdigit():
+                index = int(target)
+                if 1 <= index <= len(current):
+                    removed = current[index - 1]
+            elif target in current:
+                removed = target
+            if removed is None:
+                await message.answer(
+                    f"❌ Модель не найдена: {esc(rest) or '—'}. "
+                    "Смотрите нумерацию в /models."
+                )
+                return
+            remaining = [model for model in current if model != removed]
+            rt.set("multipost_models", ",".join(remaining))
+            await message.answer(f"✅ Удалена модель <code>{esc(removed)}</code>.")
+        elif action in {"set", "заменить"}:
+            models = parse_model_list(rest)
+            if not models:
+                await message.answer(
+                    "Использование: <code>/models set model-a, model-b</code>\n"
+                    "Очистить список: <code>/models clear</code>"
+                )
+                return
+            if len(models) > MAX_MULTIPOST_MODELS:
+                await message.answer(
+                    f"❌ Максимум {MAX_MULTIPOST_MODELS} моделей, а передано {len(models)}."
+                )
+                return
+            rt.set("multipost_models", ",".join(models))
+            await message.answer(
+                f"✅ Список моделей обновлён: <b>{len(models)}</b>."
+            )
+        elif action in {"clear", "очистить", "reset", "сброс"}:
+            if action in {"reset", "сброс"}:
+                rt.reset("multipost_models")
+            else:
+                rt.set("multipost_models", "")
+            await message.answer("✅ Список моделей очищен.")
+        else:
+            await message.answer(
+                "❓ Не понял действие. " + multipost_models_text()
+            )
+            return
+        await message.answer(multipost_models_text())
+
+    @router.callback_query(F.data.startswith("mp:queue:"))
+    async def cb_multipost_queue(cb: CallbackQuery) -> None:
+        post_id = int(cb.data.rsplit(":", 1)[1])
+        queued = service.queue_multipost_variant(post_id)
+        await cb.answer("Добавлено в очередь" if queued else "Вариант уже обработан")
+        if cb.message and queued:
+            await cb.message.edit_reply_markup(
+                reply_markup=multipost_done_keyboard(f"📥 В очереди · #{post_id}")
+            )
+
+    @router.callback_query(F.data.startswith("mp:publish:"))
+    async def cb_multipost_publish(cb: CallbackQuery) -> None:
+        post_id = int(cb.data.rsplit(":", 1)[1])
+        await cb.answer("Публикую…")
+        published = await service.publish_queued_now(post_id)
+        if cb.message:
+            label = (
+                f"✅ Опубликован · #{post_id}"
+                if published
+                else "❌ Не опубликован — смотрите /logs"
+            )
+            await cb.message.edit_reply_markup(
+                reply_markup=multipost_done_keyboard(label)
+            )
+
+    @router.callback_query(F.data.startswith("mp:discard:"))
+    async def cb_multipost_discard(cb: CallbackQuery) -> None:
+        post_id = int(cb.data.rsplit(":", 1)[1])
+        discarded = service.discard_multipost_variant(post_id)
+        await cb.answer("Удалено" if discarded else "Вариант уже обработан")
+        if cb.message:
+            label = "🗑 Удалён" if discarded else "Вариант уже обработан"
+            await cb.message.edit_reply_markup(
+                reply_markup=multipost_done_keyboard(label)
+            )
+
+    @router.callback_query(F.data == "mp:noop")
+    async def cb_multipost_noop(cb: CallbackQuery) -> None:
+        await cb.answer("Вариант уже обработан")
+
     # ---------- /pending ----------
     @router.message(Command("pending"))
     async def cmd_pending(message: Message) -> None:
@@ -1402,7 +1654,7 @@ def build_dispatcher(
             "posting_window_start", "posting_window_end", "max_posts_per_day",
             "min_minutes_between_posts", "stock_images_enabled", "brand_niche", "brand_voice",
             "brand_audience", "brand_language", "brand_cta", "forbidden_topics",
-            "max_post_chars", "writer_model", "llm_temperature",
+            "max_post_chars", "writer_model", "multipost_models", "llm_temperature",
             "writer_instructions", "threads_username",
         ]
         lines = ["<b>⚙️ Настройки</b>"]
@@ -1486,6 +1738,8 @@ def build_dispatcher(
             f"Сейчас: <code>{esc(rt.get_str('writer_model'))}</code>\n\n"
             "Переключить:\n"
             "<code>/model writer anthropic/claude-sonnet-5.5</code>\n\n"
+            "Несколько моделей для одного промпта: <code>/models</code> "
+            "и <code>/multipost</code>\n"
             "Полный каталог с ценами: polza.ai/models\n"
             "Сброс к .env: <code>/reset writer_model</code>"
         )

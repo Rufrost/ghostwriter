@@ -321,6 +321,21 @@ class Store:
             )
             return cur.rowcount > 0
 
+    def delete_post(
+        self, post_id: int, *, statuses: tuple[str, ...] | None = None
+    ) -> bool:
+        """Удаляет пост; со statuses — только если он в одном из этих статусов."""
+        with self.connect() as conn:
+            if statuses:
+                marks = ",".join("?" for _ in statuses)
+                cur = conn.execute(
+                    f"DELETE FROM posts WHERE id=? AND status IN ({marks})",
+                    (post_id, *statuses),
+                )
+            else:
+                cur = conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+            return cur.rowcount > 0
+
     def posts_for_analysis(self, days: int = 14, limit: int = 40) -> list[sqlite3.Row]:
         """Опубликованные посты за период — вход для аналитика."""
         with self.connect() as conn:
