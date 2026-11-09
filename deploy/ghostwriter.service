@@ -1,0 +1,26 @@
+[Unit]
+Description=Ghostwriter — Threads autoposting bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghostwriter
+Group=ghostwriter
+WorkingDirectory=/opt/ghostwriter
+EnvironmentFile=/opt/ghostwriter/.env
+ExecStart=/opt/ghostwriter/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Изоляция
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ghostwriter/data
+
+[Install]
+WantedBy=multi-user.target
