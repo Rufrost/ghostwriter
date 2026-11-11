@@ -5,9 +5,13 @@ import pytest
 
 from app.agents.writer import Writer
 from app.db import Store
-from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT
+from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT, WRITER_JSON_REQUIREMENT
 from app.runtime import Runtime
 from app.service import ContentService
+
+
+DEFAULT_LENGTH_BLOCK = """Ограничение: 144–240 символов.
+Лимит текста — 500 байт UTF-8."""
 
 
 class FakeLLM:
@@ -234,7 +238,7 @@ async def test_custom_system_prompt_replaces_default_in_all_author_calls(tmp_pat
     await service.multipost("Другая тема", ["model-a", "model-b"])
 
     assert len(llm.calls) == 5
-    assert all(call["system"] == prompt for call in llm.calls)
+    assert all(call["system"] == prompt + '\n\n' + DEFAULT_LENGTH_BLOCK + '\n\n' + WRITER_JSON_REQUIREMENT for call in llm.calls)
     assert all(prompt not in call["user"] for call in llm.calls)
     assert all("Устаревшие инструкции" not in call["user"] for call in llm.calls)
     assert all("ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АВТОРУ" not in call["user"] for call in llm.calls)
@@ -244,7 +248,8 @@ async def test_custom_system_prompt_replaces_default_in_all_author_calls(tmp_pat
 
     rt.reset("writer_system_prompt")
     await service.create_post(topic="После сброса")
-    assert llm.calls[-1]["system"] == DEFAULT_WRITER_SYSTEM_PROMPT
+    expected = DEFAULT_WRITER_SYSTEM_PROMPT + '\n\n' + DEFAULT_LENGTH_BLOCK
+    assert llm.calls[-1]["system"] == expected + '\n\n' + WRITER_JSON_REQUIREMENT
 
 
 async def test_custom_system_prompt_is_used_for_length_retry(tmp_path):
@@ -261,7 +266,7 @@ async def test_custom_system_prompt_is_used_for_length_retry(tmp_path):
     await service.create_post(topic="Тема")
 
     assert len(calls) == 2
-    assert all(call["system"] == prompt for call in calls)
+    assert all(call["system"] == prompt + '\n\n' + DEFAULT_LENGTH_BLOCK + '\n\n' + WRITER_JSON_REQUIREMENT for call in calls)
     assert "Сократи" in calls[1]["user"]
 
 
@@ -338,3 +343,71 @@ def test_queue_supports_extended_byte_limit(tmp_path):
     with pytest.raises(ValueError, match="1500"):
         service.queue_user_posts([text + "Я"])
     assert store.count_queued_posts() == 1
+
+
+async def test_default_constraints_only_reach_system_for_all_author_operations(tmp_path):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    post_id = await service.create_post(topic="Тест")
+    await service.revise(post_id, "Измени вступление")
+    queued_id = service.queue_user_posts(["Исходный пост"])[0]
+    await service.rephrase_to_queue(queued_id)
+    await service.multipost("Тест", ["model-a", "model-b"])
+
+    assert len(llm.calls) == 5
+    for call in llm.calls:
+        assert "Ограничение: 144–240 символов." in call["system"]
+        assert "крючок, мысль, финал" not in call["system"]
+        assert "Лимит текста — 500 байт UTF-8." in call["system"]
+        assert call["system"].endswith(WRITER_JSON_REQUIREMENT)
+        assert "Ограничение:" not in call["user"]
+        assert "крючок, мысль, финал" not in call["user"]
+        assert "байт UTF-8" not in call["user"]
+        assert "Верни только JSON" not in call["user"]
+
+
+@pytest.mark.parametrize(
+    "language,limit,minimum,maximum",
+    [("ru", 500, 144, 240), ("ru", 1500, 444, 740),
+     ("en", 500, 240, 400), ("en", 1500, 720, 1200)],
+)
+async def test_fixed_system_limits_follow_live_settings(
+    tmp_path, language, limit, minimum, maximum,
+):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    template = 'JSON: {"text":"пример"}; {unknown}'
+    rt.set("writer_system_prompt", template)
+    rt.set("brand_language", language)
+    rt.set("max_post_chars", limit)
+
+    await service.create_post(topic="Тест")
+    system = llm.calls[0]["system"]
+    assert f"Ограничение: {minimum}–{maximum} символов." in system
+    assert f"Лимит текста — {limit} байт UTF-8." in system
+    assert 'JSON: {"text":"пример"}; {unknown}' in system
+    assert rt.get_str("writer_system_prompt") == template
+
+    # После изменения настроек тот же шаблон и Writer используют новые значения.
+    rt.set("max_post_chars", 1000)
+    await service.create_post(topic="Ещё тест")
+    assert "Лимит текста — 1000 байт UTF-8." in llm.calls[-1]["system"]
+    assert "{max_bytes}" not in llm.calls[-1]["system"]
+
+
+async def test_multipost_system_limits_use_russian_despite_english_brand_language(tmp_path):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    rt.set("brand_language", "en")
+    await service.multipost("Тест", ["model-a", "model-b"])
+    assert all("Ограничение: 144–240 символов." in call["system"] for call in llm.calls)
+    assert llm.calls[0]["system"] == llm.calls[1]["system"]
+
+
+async def test_fixed_limits_remain_when_custom_prompt_has_no_constraints(tmp_path):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    rt.set("writer_system_prompt", "Пиши одним предложением без вступления и финала.")
+    await service.create_post(topic="Тест")
+    assert DEFAULT_LENGTH_BLOCK in llm.calls[0]["system"]
+    assert "Ограничение:" not in llm.calls[0]["user"]
+    for field in ("system", "user"):
+        assert "крючок, мысль, финал" not in llm.calls[0][field]
+        assert "Пост должен быть" not in llm.calls[0][field]
+    assert llm.calls[0]["system"].endswith(WRITER_JSON_REQUIREMENT)

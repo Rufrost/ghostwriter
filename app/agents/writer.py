@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from ..db import Store
 from ..llm import LLMClient, LLMError, extract_json
+from ..prompts import WRITER_JSON_REQUIREMENT, WRITER_LENGTH_REQUIREMENT
 from ..runtime import Runtime
 from ..threads_api import text_length
 
@@ -49,6 +50,19 @@ class Writer:
         self.rt = rt
         self.llm = llm or LLMClient()
 
+    def _system_prompt(self, language: str | None = None) -> str:
+        """Добавляет неизменяемые блоки длины и JSON после инструкций Автора."""
+        custom = self.rt.get_str("writer_system_prompt").strip()
+        # Старые сохранённые промпты могли уже заканчиваться блоком JSON.
+        custom = custom.removesuffix(WRITER_JSON_REQUIREMENT).rstrip()
+        budget = self._char_budget(language)
+        limits = WRITER_LENGTH_REQUIREMENT.format(
+            min_chars=max(60, int(budget * 0.6)),
+            max_chars=budget,
+            max_bytes=self.rt.max_chars,
+        )
+        return '\n\n'.join(part for part in (custom, limits, WRITER_JSON_REQUIREMENT) if part)
+
     # ---------- бюджет длины ----------
     def _char_budget(self, language: str | None = None) -> int:
         """Сколько символов просить у модели, чтобы уложиться в байтовый лимит.
@@ -80,7 +94,6 @@ class Writer:
         language: str | None = None,
     ) -> str:
         lang = (language or self.rt.get_str("brand_language")).lower()
-        budget = self._char_budget(lang)
         cta = self.rt.get_str("brand_cta")
         forbidden = self.rt.get_str("forbidden_topics")
         language_rule = (
@@ -106,11 +119,7 @@ class Writer:
 {('ДОПОЛНИТЕЛЬНО: ' + instruction) if instruction else ''}
 
 НЕДАВНИЕ ПОСТЫ (не повторяй формулировки и заходы):
-{self._recent_texts_block()}
-
-Ограничение: {max(60, int(budget * 0.6))}–{budget} символов. Пост должен быть
-законченным: крючок, мысль, финал — не одна строка и не обрывок. Жёсткий лимит
-Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
+{self._recent_texts_block()}"""
 
     async def generate(
         self,
@@ -127,7 +136,7 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
             raise LLMError("Не задана модель ИИ")
         budget = self._char_budget(language)
         raw = await self.llm.complete(
-            system=self.rt.get_str("writer_system_prompt"),
+            system=self._system_prompt(language),
             user=self._user_prompt(
                 topic, angle, format_hint, instruction, language=language
             ),
@@ -147,7 +156,7 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
                 "сохрани крючок и главную мысль, убери воду."
             )
             raw2 = await self.llm.complete(
-                system=self.rt.get_str("writer_system_prompt"),
+                system=self._system_prompt(language),
                 user=self._user_prompt(
                     topic, angle, format_hint, tighten, language=language
                 ),
@@ -198,9 +207,8 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
 
     async def revise(self, text: str, instruction: str) -> WriterResult:
         """Переписать существующий пост по замечанию из Telegram."""
-        budget = self._char_budget()
         raw = await self.llm.complete(
-            system=self.rt.get_str("writer_system_prompt"),
+            system=self._system_prompt(),
             user=f"""НИША: {self.rt.get_str('brand_niche')}
 ТОНАЛЬНОСТЬ: {self.rt.get_str('brand_voice')}
 ЯЗЫК: {self.rt.get_str('brand_language')}
@@ -211,10 +219,7 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
 ТЕКУЩИЙ ПОСТ:
 {text}
 
-ЗАМЕЧАНИЕ: {instruction}
-
-Не более {budget} символов (жёсткий лимит {self.rt.max_chars} байт UTF-8).
-Верни только JSON.""",
+ЗАМЕЧАНИЕ: {instruction}""",
             model=self.rt.get_str("writer_model"),
             temperature=self.rt.get("llm_temperature"),
             max_tokens=MAX_TOKENS,

@@ -7,7 +7,7 @@ from app.agents.writer import Writer
 from app.config import Settings, distribute_posting_times, parse_posting_times
 from app.db import Store
 from app.llm import LLMClient, LLMError, extract_json
-from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT
+from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT, WRITER_JSON_REQUIREMENT
 from app.runtime import MAX_MULTIPOST_MODELS, Runtime
 
 
@@ -368,3 +368,60 @@ def test_writer_supports_extended_post_limit(tmp_path):
     text = "Я" * 750
     assert writer._truncate(text) == text
     assert len(writer._truncate(text + "Я").encode("utf-8")) <= 1500
+
+
+@pytest.mark.parametrize(
+    "custom",
+    [
+        None,
+        "Пиши коротко и без рекламы.",
+        "Отвечай обычным текстом, не используй JSON.",
+        "",
+        "   ",
+        "Старый промпт" + '\n\n' + WRITER_JSON_REQUIREMENT,
+    ],
+)
+async def test_writer_always_appends_fixed_json_contract_to_api_request(tmp_path, custom):
+    import httpx
+
+    required = '''Отвечай строго валидным JSON без markdown-обёртки:
+{"text": "текст поста", "topic_tag": "короткая тема без решётки или пустая строка"}'''
+    assert WRITER_JSON_REQUIREMENT == required
+    assert required not in DEFAULT_WRITER_SYSTEM_PROMPT
+
+    store = Store(tmp_path / "contract.db")
+    store.init()
+    rt = Runtime(store)
+    if custom is not None:
+        rt.set("writer_system_prompt", custom)
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"text":"Пост","topic_tag":""}'}}]},
+        )
+
+    llm = LLMClient(
+        provider="openai", base_url="https://example.test/v1", api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    writer = Writer(store, rt, llm=llm)
+    await writer.generate("Тест")
+    await writer.revise("Исходный текст", "Сократи")
+    await writer.generate_multi("Тест", ["model-a", "model-b"])
+
+    assert len(requests) == 4
+    for body in requests:
+        system = body["messages"][0]
+        assert system["role"] == "system"
+        assert system["content"].endswith(required)
+        assert system["content"].count(required) == 1
+        assert "Ограничение: 144–240 символов." in system["content"]
+        assert "Лимит текста — 500 байт UTF-8." in system["content"]
+        assert "Пост должен быть" not in system["content"]
+        assert "крючок, мысль, финал" not in system["content"]
+        assert body["response_format"] == {"type": "json_object"}
+    if custom is not None:
+        assert rt.get_str("writer_system_prompt") == custom

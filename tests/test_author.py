@@ -8,7 +8,7 @@ from aiogram.fsm.storage.base import StorageKey
 from app.bot import AgentSettingEditing, build_dispatcher
 from app.config import settings
 from app.db import Store
-from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT
+from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT, WRITER_JSON_REQUIREMENT, WRITER_LENGTH_REQUIREMENT
 from app.runtime import Runtime
 from app.service import ContentService
 
@@ -67,6 +67,10 @@ async def test_author_panel_exposes_system_prompt_instead_of_extra_instructions(
     opened = await open_prompt(dp, state)
     full_prompt = "".join(text for text, kwargs in opened.sent if kwargs.get("parse_mode", "HTML") is None)
     assert full_prompt == DEFAULT_WRITER_SYSTEM_PROMPT
+    assert WRITER_JSON_REQUIREMENT not in full_prompt
+    assert WRITER_LENGTH_REQUIREMENT not in full_prompt
+    assert "Пост должен быть" not in full_prompt
+    assert any("Блоки длины и JSON добавляются автоматически" in text for text, _ in opened.sent)
     assert await state.get_state() == AgentSettingEditing.value.state
 
     prompt = "Пиши без рекламы.\nВерни JSON с text и topic_tag."
