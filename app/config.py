@@ -97,8 +97,8 @@ class Settings(BaseSettings):
     @field_validator("max_post_chars")
     @classmethod
     def _check_chars(cls, v: int) -> int:
-        if not 1 <= v <= 500:
-            raise ValueError("max_post_chars должен быть в диапазоне 1..500")
+        if not 1 <= v <= 1500:
+            raise ValueError("max_post_chars должен быть в диапазоне 1..1500")
         return v
 
     @field_validator("posting_jitter_minutes")

@@ -140,7 +140,7 @@ class Runtime:
     # ---------- производные ----------
     @property
     def max_chars(self) -> int:
-        return max(1, min(500, self.get_int("max_post_chars")))
+        return max(1, min(1500, self.get_int("max_post_chars")))
 
     @property
     def posting_times(self) -> list[tuple[int, int]]:

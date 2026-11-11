@@ -585,8 +585,8 @@ def build_dispatcher(
             return number
         if key == "max_post_chars":
             number = int(value)
-            if not 1 <= number <= 500:
-                raise ValueError("Лимит должен быть от 1 до 500 байт")
+            if not 1 <= number <= 1500:
+                raise ValueError("Лимит должен быть от 1 до 1500 байт")
             return number
         return value[:4000]
 
@@ -1691,9 +1691,9 @@ def build_dispatcher(
         except Exception as exc:
             await message.answer(f"❌ {esc(exc)}")
             return
-        if key == "max_post_chars" and not 1 <= int(new) <= 500:
+        if key == "max_post_chars" and not 1 <= int(new) <= 1500:
             rt.set(key, old)
-            await message.answer("❌ max_post_chars должен быть 1..500")
+            await message.answer("❌ max_post_chars должен быть 1..1500")
             return
         if key == "posting_jitter_minutes" and not 0 <= int(new) <= 60:
             rt.set(key, old)
@@ -1887,7 +1887,7 @@ def build_dispatcher(
             await note.edit_text(
                 f"📝 <b>Пост #{post_id} обновлён</b>\n\n"
                 f"<blockquote>{esc(result.text)}</blockquote>\n"
-                f"<i>{result.bytes_len}/500 байт</i>",
+                f"<i>{result.bytes_len}/{rt.max_chars} байт</i>",
                 reply_markup=approval_keyboard(post_id),
             )
         except Exception as exc:

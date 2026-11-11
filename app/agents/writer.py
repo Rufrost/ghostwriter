@@ -81,7 +81,7 @@ class Writer:
             budget = max_bytes // 2 - 10
         else:
             budget = int(max_bytes * 0.8)
-        return max(60, min(budget, 400))
+        return max(60, budget)
 
     def _recent_texts_block(self, limit: int = 6) -> str:
         rows = self.store.recent_posts(limit=limit)

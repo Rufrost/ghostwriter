@@ -325,7 +325,7 @@ Threads скачивает файл через публичный неизмен
 | `stock_images_enabled` | автоматически добавлять изображения из медиастока | `true` |
 | `brand_niche`, `brand_voice`, `brand_audience`, `brand_cta` | описание бренда | — |
 | `forbidden_topics` | чего не касаться | — |
-| `max_post_chars` | лимит (1..500) | `500` |
+| `max_post_chars` | лимит приложения (1..1500 байт UTF-8) | `500` |
 | `writer_model` | модель Автора | `deepseek-chat` |
 | `multipost_models` | модели для `/multipost` (через запятую) | пусто |
 | `writer_instructions` | дополнительные инструкции Автору | пусто |

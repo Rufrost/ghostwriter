@@ -289,3 +289,15 @@ async def test_multipost_variant_can_be_queued_or_discarded(tmp_path):
     assert service.discard_multipost_variant(first_id)
     assert store.get_post(first_id) is None
     assert store.count_queued_posts() == 0
+
+
+def test_queue_supports_extended_byte_limit(tmp_path):
+    store, rt, _llm, service, _notifier = build(tmp_path)
+    rt.set("max_post_chars", 1500)
+    text = "Я" * 750
+
+    post_id = service.queue_user_posts([text])[0]
+    assert store.get_post(post_id)["text"] == text
+    with pytest.raises(ValueError, match="1500"):
+        service.queue_user_posts([text + "Я"])
+    assert store.count_queued_posts() == 1

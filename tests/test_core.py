@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from app.agents.writer import Writer
-from app.config import distribute_posting_times, parse_posting_times
+from app.config import Settings, distribute_posting_times, parse_posting_times
 from app.db import Store
 from app.llm import LLMClient, LLMError, extract_json
 from app.runtime import MAX_MULTIPOST_MODELS, Runtime
@@ -327,3 +327,37 @@ def test_init_removes_legacy_topics_and_preserves_posts(tmp_path):
     assert store.get_post_image(1)["id"] == 1
     assert store.get_setting("strategist_model") is None
     assert store.get_setting("metrics_lookback_days") is None
+
+
+@pytest.mark.parametrize("value", [1, 500, 501, 1500])
+def test_max_post_chars_settings_accept_valid_values(value):
+    assert Settings(_env_file=None, max_post_chars=value).max_post_chars == value
+
+
+@pytest.mark.parametrize("value", [0, -1, 1501])
+def test_max_post_chars_settings_reject_invalid_values(value):
+    with pytest.raises(ValueError, match="1..1500"):
+        Settings(_env_file=None, max_post_chars=value)
+
+
+@pytest.mark.parametrize("value, expected", [(0, 1), (501, 501), (1500, 1500), (1501, 1500)])
+def test_runtime_post_limit(tmp_path, value, expected):
+    store = Store(tmp_path / "limit.db")
+    store.init()
+    rt = Runtime(store)
+    rt.set("max_post_chars", value)
+    assert rt.max_chars == expected
+
+
+def test_writer_supports_extended_post_limit(tmp_path):
+    store = Store(tmp_path / "writer-limit.db")
+    store.init()
+    rt = Runtime(store)
+    rt.set("max_post_chars", 1500)
+    writer = Writer(store, rt)
+
+    assert writer._char_budget("ru") == 740
+    assert writer._char_budget("en") == 1200
+    text = "Я" * 750
+    assert writer._truncate(text) == text
+    assert len(writer._truncate(text + "Я").encode("utf-8")) <= 1500
