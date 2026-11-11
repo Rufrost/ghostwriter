@@ -215,6 +215,9 @@ async def test_web_health_and_auth_redirect(tmp_path):
     assert help_page.status_code == 200
     assert "text/html" in help_page.headers["content-type"]
     assert "Командный стол" in help_page.text
+    assert "Октав" not in help_page.text
+    assert "ledogenerator_bot" not in help_page.text
+    assert "Вернуться в Telegram" not in help_page.text
     for command in ("/post", "/memory", "/frequency", "/jitter", "/token", "/cancel"):
         assert command in help_page.text
 
