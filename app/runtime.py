@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .config import settings
 from .db import Store
+from .prompts import DEFAULT_WRITER_SYSTEM_PROMPT
 
 _TRUE = {"1", "true", "yes", "on", "да", "вкл"}
 MAX_MULTIPOST_MODELS = 8
@@ -80,7 +81,7 @@ SPECS: dict[str, Spec] = {
     "writer_model": Spec("writer_model", _as_str, "deepseek-chat"),
     "multipost_models": Spec("multipost_models", _as_str, ""),
     "llm_temperature": Spec("llm_temperature", _as_float, 0.8),
-    "writer_instructions": Spec(None, _as_str, ""),
+    "writer_system_prompt": Spec(None, _as_str, DEFAULT_WRITER_SYSTEM_PROMPT),
 }
 
 

@@ -545,7 +545,7 @@ def build_dispatcher(
         ("brand_cta", "Призыв / ссылка"),
         ("forbidden_topics", "Запрещённые темы"),
         ("max_post_chars", "Лимит байт"),
-        ("writer_instructions", "Инструкции автору"),
+        ("writer_system_prompt", "Системный промпт"),
     ]
 
     def author_panel_text() -> str:
@@ -576,6 +576,12 @@ def build_dispatcher(
         value = raw.strip()
         if value == "-":
             value = ""
+        if key == "writer_system_prompt":
+            if not value:
+                raise ValueError("Системный промпт не может быть пустым; используйте /reset")
+            if len(value) > 4000:
+                raise ValueError("Системный промпт должен быть не длиннее 4000 символов")
+            return value
         if key in {"writer_model", "brand_language"} and not value:
             raise ValueError("Значение не может быть пустым")
         if key == "llm_temperature":
@@ -1391,6 +1397,22 @@ def build_dispatcher(
         await cb.answer()
         if cb.message:
             current = str(rt.get(key)).strip() or "—"
+            if key == "writer_system_prompt":
+                await cb.message.answer(
+                    "✏️ <b>Системный промпт</b>\n"
+                    "Ниже — полный действующий текст. Он передаётся в system при "
+                    "генерации, мультипосте, доработке и перефразировании."
+                )
+                # Без HTML: произвольный промпт показывается буквально, без обрезки.
+                for start in range(0, len(current), 1500):
+                    await cb.message.answer(current[start : start + 1500], parse_mode=None)
+                await cb.message.answer(
+                    "Отправьте полный новый системный промпт (до 4000 символов). "
+                    "Он <b>заменит</b> текущий, а не дополнит его.\n"
+                    "Сохраните требование ответа JSON с полями text и topic_tag.\n"
+                    "<code>/reset</code> — вернуть базовый промпт, /cancel — отмена."
+                )
+                return
             await cb.message.answer(
                 f"✏️ <b>{esc(fields[key])}</b>\n"
                 f"Сейчас: <code>{escaped_preview(current, 2500)}</code>\n\n"
@@ -1422,7 +1444,8 @@ def build_dispatcher(
             return
         await state.clear()
         store.log_event(f"Изменена настройка {key} через Telegram")
-        await message.answer(f"✅ <b>{esc(fields[key])}</b>: {esc(rt.get(key))}")
+        value = escaped_preview(rt.get(key), 2500)
+        await message.answer(f"✅ <b>{esc(fields[key])}</b>: {value}")
         await message.answer(author_panel_text(), reply_markup=author_panel_keyboard())
 
     # ---------- /analytics ----------
@@ -1655,13 +1678,17 @@ def build_dispatcher(
             "min_minutes_between_posts", "stock_images_enabled", "brand_niche", "brand_voice",
             "brand_audience", "brand_language", "brand_cta", "forbidden_topics",
             "max_post_chars", "writer_model", "multipost_models", "llm_temperature",
-            "writer_instructions", "threads_username",
+            "writer_system_prompt", "threads_username",
         ]
         lines = ["<b>⚙️ Настройки</b>"]
         overridden = set(store.all_settings())
         for key in keys:
             mark = " <i>(из бота)</i>" if key in overridden else ""
-            lines.append(f"<code>{key}</code> = {esc(rt.get(key))}{mark}")
+            value = (
+                escaped_preview(rt.get(key), 250)
+                if key == "writer_system_prompt" else esc(rt.get(key))
+            )
+            lines.append(f"<code>{key}</code> = {value}{mark}")
         lines.append(
             "\nИзменение: <code>/set ключ значение</code>\n"
             "Сброс к .env: <code>/reset ключ</code>\n"
@@ -1711,7 +1738,12 @@ def build_dispatcher(
                 return
         if key in {"posting_times", "posting_jitter_minutes"}:
             scheduler.reload()
-        await message.answer(f"✅ <code>{esc(key)}</code>: {esc(old)} → {esc(new)}")
+        if key == "writer_system_prompt":
+            await message.answer(
+                "✅ Системный промпт обновлён. Применится к следующему запросу."
+            )
+        else:
+            await message.answer(f"✅ <code>{esc(key)}</code>: {esc(old)} → {esc(new)}")
 
     @router.message(Command("reset"))
     async def cmd_reset(message: Message, command: CommandObject) -> None:

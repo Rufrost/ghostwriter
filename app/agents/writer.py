@@ -14,27 +14,7 @@ from ..threads_api import text_length
 
 log = logging.getLogger(__name__)
 
-SYSTEM = """Ты — автор постов для Threads. Пишешь от первого лица, как живой человек,
-а не как пресс-релиз или маркетинговый бот.
-
-Правила:
-- Первая строка — крючок: мысль, вопрос или неожиданное утверждение, от которого
-  хочется читать дальше. Без «В современном мире» и «Давайте разберёмся».
-- Короткие абзацы, разговорный ритм, конкретика и примеры вместо общих слов.
-- Одна мысль на пост. Не пытайся уместить всё.
-- Финал — вопрос к читателю или приглашение к спору, если это уместно.
-- Без хэштегов в тексте, без markdown, без кавычек вокруг всего поста.
-- Не выдумывай факты, цифры и исследования. Если факт нужен, но его нет —
-  говори обобщённо.
-- Не повторяй формулировки из недавних постов, которые тебе покажут.
-
-Отвечай строго валидным JSON без markdown-обёртки:
-{"text": "текст поста", "topic_tag": "короткая тема без решётки или пустая строка"}"""
-
 MAX_TOKENS = 2500  # запас на reasoning-токены «думающих» моделей
-
-REVISE_SYSTEM = """Ты — редактор постов для Threads. Переписываешь текст по инструкции,
-сохраняя смысл и голос автора. Отвечай строго JSON: {"text": "...", "topic_tag": "..."}"""
 
 
 @dataclass
@@ -103,7 +83,6 @@ class Writer:
         budget = self._char_budget(lang)
         cta = self.rt.get_str("brand_cta")
         forbidden = self.rt.get_str("forbidden_topics")
-        custom = self.rt.get_str("writer_instructions").strip()
         language_rule = (
             "ПИШИ ПОСТ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ."
             if lang.startswith("ru")
@@ -120,7 +99,6 @@ class Writer:
 
 {('ПРИЗЫВ/ССЫЛКА (добавь органично, если уместно): ' + cta) if cta else ''}
 {('НЕ КАСАЙСЯ ТЕМ: ' + forbidden) if forbidden else ''}
-{('ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АВТОРУ: ' + custom) if custom else ''}
 
 ТЕМА: {topic}
 {('УГОЛ ПОДАЧИ: ' + angle) if angle else ''}
@@ -149,7 +127,7 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
             raise LLMError("Не задана модель ИИ")
         budget = self._char_budget(language)
         raw = await self.llm.complete(
-            system=SYSTEM,
+            system=self.rt.get_str("writer_system_prompt"),
             user=self._user_prompt(
                 topic, angle, format_hint, instruction, language=language
             ),
@@ -169,7 +147,7 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
                 "сохрани крючок и главную мысль, убери воду."
             )
             raw2 = await self.llm.complete(
-                system=SYSTEM,
+                system=self.rt.get_str("writer_system_prompt"),
                 user=self._user_prompt(
                     topic, angle, format_hint, tighten, language=language
                 ),
@@ -222,15 +200,13 @@ Threads — {self.rt.max_chars} байт UTF-8. Верни только JSON."""
         """Переписать существующий пост по замечанию из Telegram."""
         budget = self._char_budget()
         raw = await self.llm.complete(
-            system=REVISE_SYSTEM,
+            system=self.rt.get_str("writer_system_prompt"),
             user=f"""НИША: {self.rt.get_str('brand_niche')}
 ТОНАЛЬНОСТЬ: {self.rt.get_str('brand_voice')}
 ЯЗЫК: {self.rt.get_str('brand_language')}
 
 ЗНАНИЯ О ПРОЕКТЕ (сохрани фактическую точность):
 {self.store.project_knowledge_context() or '—'}
-
-{('ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АВТОРУ: ' + self.rt.get_str('writer_instructions').strip()) if self.rt.get_str('writer_instructions').strip() else ''}
 
 ТЕКУЩИЙ ПОСТ:
 {text}

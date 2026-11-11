@@ -5,6 +5,7 @@ import pytest
 
 from app.agents.writer import Writer
 from app.db import Store
+from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT
 from app.runtime import Runtime
 from app.service import ContentService
 
@@ -217,15 +218,51 @@ async def test_project_knowledge_reaches_author_and_rephrase(tmp_path):
     assert all("Продукт называется Orbit" in call["user"] for call in llm.calls)
 
 
-async def test_custom_author_instructions_reach_generation_and_rephrase(tmp_path):
+async def test_custom_system_prompt_replaces_default_in_all_author_calls(tmp_path):
     store, rt, llm, service, _notifier = build(tmp_path)
-    rt.set("writer_instructions", "Добавляй один практический пример")
+    prompt = "Пиши деловым языком. Без вопросов. Верни JSON с text и topic_tag."
+    rt.set("writer_system_prompt", prompt)
+    rt.set("brand_voice", "Спокойный тон")
+    store.add_project_knowledge("Продукт", "У нас есть бесплатный тариф")
+    # Старые дополнительные инструкции не должны незаметно дополнять новый system.
+    store.set_setting("writer_instructions", "Устаревшие инструкции")
 
-    await service.create_post(topic="Тема")
+    post_id = await service.create_post(topic="Тема")
+    await service.revise(post_id, "Убери вступление")
     queued_id = service.queue_user_posts(["Исходный текст"])[0]
     await service.rephrase_to_queue(queued_id)
+    await service.multipost("Другая тема", ["model-a", "model-b"])
 
-    assert all("Добавляй один практический пример" in call["user"] for call in llm.calls)
+    assert len(llm.calls) == 5
+    assert all(call["system"] == prompt for call in llm.calls)
+    assert all(prompt not in call["user"] for call in llm.calls)
+    assert all("Устаревшие инструкции" not in call["user"] for call in llm.calls)
+    assert all("ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ АВТОРУ" not in call["user"] for call in llm.calls)
+    assert all("бесплатный тариф" in call["user"] for call in llm.calls)
+    assert "Спокойный тон" in llm.calls[0]["user"]
+    assert "Исходный текст" in llm.calls[2]["user"]
+
+    rt.reset("writer_system_prompt")
+    await service.create_post(topic="После сброса")
+    assert llm.calls[-1]["system"] == DEFAULT_WRITER_SYSTEM_PROMPT
+
+
+async def test_custom_system_prompt_is_used_for_length_retry(tmp_path):
+    store, rt, llm, service, _notifier = build(tmp_path)
+    prompt = "Мой системный промпт"
+    rt.set("writer_system_prompt", prompt)
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(kwargs)
+        return json.dumps({"text": "я" * 300 if len(calls) == 1 else "Короткий пост"})
+
+    llm.complete = complete
+    await service.create_post(topic="Тема")
+
+    assert len(calls) == 2
+    assert all(call["system"] == prompt for call in calls)
+    assert "Сократи" in calls[1]["user"]
 
 
 async def test_multipost_sends_same_russian_prompt_to_every_model(tmp_path):

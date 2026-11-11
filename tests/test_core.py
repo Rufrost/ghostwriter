@@ -7,6 +7,7 @@ from app.agents.writer import Writer
 from app.config import Settings, distribute_posting_times, parse_posting_times
 from app.db import Store
 from app.llm import LLMClient, LLMError, extract_json
+from app.prompts import DEFAULT_WRITER_SYSTEM_PROMPT
 from app.runtime import MAX_MULTIPOST_MODELS, Runtime
 
 
@@ -202,10 +203,16 @@ def test_author_settings_are_runtime_editable(tmp_path):
     store.init()
     rt = Runtime(store)
 
-    rt.set("writer_instructions", "Всегда добавляй конкретный пример")
+    assert rt.get_str("writer_system_prompt") == DEFAULT_WRITER_SYSTEM_PROMPT
+    rt.set("writer_system_prompt", "Всегда добавляй конкретный пример")
     rt.set("writer_model", "author-model")
 
-    assert rt.get_str("writer_instructions") == "Всегда добавляй конкретный пример"
+    assert rt.get_str("writer_system_prompt") == "Всегда добавляй конкретный пример"
+    assert Runtime(Store(store.path)).get_str("writer_system_prompt") == "Всегда добавляй конкретный пример"
+    rt.reset("writer_system_prompt")
+    assert rt.get_str("writer_system_prompt") == DEFAULT_WRITER_SYSTEM_PROMPT
+    with pytest.raises(KeyError):
+        rt.get("writer_instructions")
     assert rt.get_str("writer_model") == "author-model"
     with pytest.raises(KeyError):
         rt.get("strategist_model")
